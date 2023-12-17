@@ -1,4 +1,6 @@
 const std = @import("std");
+const movstd = @import("./mov.zig");
+const Mov = movstd.Mov;
 
 pub fn main() !void {
     var fixed_allocator_buffer: [1000]u8 = undefined;
@@ -39,60 +41,12 @@ pub fn main() !void {
         std.debug.print("{s}\n", .{str});
     }
 }
-
-const MemMode = enum { none, eight_bit, sixteen_bit, register };
-const Mov = struct {
-    dst: RegMemName,
-    src: RegMemName,
-    word: u1, // 0 byte operation, 1 word operation
-    direction: u1, // 0 to reg field, 1 from reg field
-    mode: MemMode,
-
-    fn init(d: u1, w: u1, mod: u2, reg: u3, regmem: u3) Mov {
-        var src: RegMemName = undefined;
-        var dst: RegMemName = undefined;
-        switch (d) {
-            0 => {
-                src = getRegister(w, reg);
-                dst = getRegister(w, regmem);
-            },
-            1 => {
-                src = getRegister(w, regmem);
-                dst = getRegister(w, reg);
-            },
-        }
-        return Mov{
-            .src = src,
-            .dst = dst,
-            .word = w,
-            .direction = d,
-            .mode = @as(MemMode, @enumFromInt(mod)),
-        };
-    }
-
-    fn getRegister(w: u1, reg: u3) RegMemName {
-        switch (w) {
-            0 => return @as(RegMemName, @enumFromInt(reg)),
-            1 => {
-                const l = @typeInfo(RegMemName).Enum.fields.len / 2;
-                return @as(RegMemName, @enumFromInt(reg + l));
-            },
-        }
-    }
-
-    fn toStr(self: *const Mov, allocator: std.mem.Allocator) ![]u8 {
-        return try std.fmt.allocPrint(allocator, "mov {s}, {s}", .{ @tagName(self.dst), @tagName(self.src) });
-    }
-};
-
 const NotImplemented = struct {
     fn toStr() []u8 {
         return "Not Implemented";
     }
 };
-
 const InstructionEnum = enum { mov, add, sub, mul, cmp, je, jmp, hlt, not_implemented };
-
 const Instruction = union(InstructionEnum) {
     mov: Mov,
     add: void,
@@ -112,8 +66,6 @@ const Instruction = union(InstructionEnum) {
     }
 };
 
-const RegMemName = enum { al, cl, dl, bl, ah, ch, dh, bh, ax, cx, dx, bx, sp, bp, si, di };
-
 const Parser = struct {
     instructions: std.ArrayList(Instruction),
     cursor: u8 = 0,
@@ -128,17 +80,78 @@ const Parser = struct {
         return 0;
     }
 
-    fn decode(self: *Parser, buffer: []u8, i: usize) !u8 {
-        const ops = (buffer[i] >> 2);
+    fn decode100(self: *Parser, buffer: []u8, i: usize) !u8 {
+        const ops = (buffer[i] >> 2) & 0b111;
+
         switch (ops) {
-            0b100010 => {
-                const d: u1 = @intCast((buffer[i] >> 1) & 1);
-                const w: u1 = @intCast(buffer[i] & 1);
-                const mod: u2 = @intCast(buffer[i + 1] >> 6);
-                const reg: u3 = @intCast((buffer[i + 1] >> 3) & 0b111);
-                const regmem: u3 = @intCast(buffer[i + 1] & 0b111);
-                try self.instructions.append(Instruction{ .mov = Mov.init(d, w, mod, reg, regmem) });
-                return 2;
+            0b010 => {
+                const mov = Mov.parseRegToReg(buffer[i .. i + 4]);
+                try self.instructions.append(Instruction{ .mov = mov });
+                switch (mov.mode.?) {
+                    .eight_bit => return 3,
+                    .sixteen_bit => return 4,
+                    else => return 2,
+                }
+            },
+            else => {
+                std.debug.print("Missing ops {b} {b}\n", .{ ops, buffer[i] });
+                return 1;
+            },
+        }
+    }
+
+    fn decode110(self: *Parser, buffer: []u8, i: usize) !u8 {
+        const ops = (buffer[i] >> 2) & 0b111;
+
+        switch (ops) {
+            0b001 => {
+                const mov = Mov.parseImmediateToRegMem(buffer[i .. i + 6]);
+                try self.instructions.append(Instruction{ .mov = mov });
+                switch (mov.word) {
+                    0 => return 5,
+                    1 => return 6,
+                }
+            },
+            else => {
+                std.debug.print("Missing ops {b} {b}\n", .{ ops, buffer[i] });
+                return 1;
+            },
+        }
+    }
+
+    fn decode101(self: *Parser, buffer: []u8, i: usize) !u8 {
+        const ops = (buffer[i] >> 4) & 0b1;
+
+        switch (ops) {
+            0b1 => {
+                const mov = Mov.parseImmediateToReg(buffer[i .. i + 3]);
+                try self.instructions.append(Instruction{ .mov = mov });
+
+                switch (mov.word) {
+                    0 => return 2,
+                    1 => return 3,
+                }
+            },
+            else => {
+                std.debug.print("Missing ops {b} {b}\n", .{ ops, buffer[i] });
+                return 1;
+            },
+        }
+    }
+
+    // TODO inline functions
+    fn decode(self: *Parser, buffer: []u8, i: usize) !u8 {
+        const ops = (buffer[i] >> 5);
+
+        switch (ops) {
+            0b100 => {
+                return self.decode100(buffer, i);
+            },
+            0b110 => {
+                return self.decode110(buffer, i);
+            },
+            0b101 => {
+                return self.decode101(buffer, i);
             },
             else => {
                 std.debug.print("Missing ops {b} {b}\n", .{ ops, buffer[i] });
