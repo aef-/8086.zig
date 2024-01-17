@@ -68,10 +68,10 @@ const Instruction = union(InstructionEnum) {
 
 const Parser = struct {
     instructions: std.ArrayList(Instruction),
-    cursor: u8 = 0,
+    cursor: usize = 0,
 
     fn parse(self: *Parser, buffer: []u8) !usize {
-        var i: u8 = 0;
+        var i: usize = 0;
         while (buffer[i] != 0b10101010) {
             const bytes_to_skip = try self.decode(buffer, i);
             i = i + bytes_to_skip;
@@ -79,85 +79,17 @@ const Parser = struct {
 
         return 0;
     }
-
-    fn decode100(self: *Parser, buffer: []u8, i: usize) !u8 {
-        const ops = (buffer[i] >> 2) & 0b111;
-
-        switch (ops) {
-            0b010 => {
-                const mov = Mov.parseRegToReg(buffer[i .. i + 4]);
-                try self.instructions.append(Instruction{ .mov = mov });
-                switch (mov.mode.?) {
-                    .eight_bit => return 3,
-                    .sixteen_bit => return 4,
-                    else => return 2,
-                }
-            },
-            else => {
-                std.debug.print("Missing ops {b} {b}\n", .{ ops, buffer[i] });
-                return 1;
-            },
-        }
-    }
-
-    fn decode110(self: *Parser, buffer: []u8, i: usize) !u8 {
-        const ops = (buffer[i] >> 2) & 0b111;
-
-        switch (ops) {
-            0b001 => {
-                const mov = Mov.parseImmediateToRegMem(buffer[i .. i + 6]);
-                try self.instructions.append(Instruction{ .mov = mov });
-                switch (mov.word) {
-                    0 => return 5,
-                    1 => return 6,
-                }
-            },
-            else => {
-                std.debug.print("Missing ops {b} {b}\n", .{ ops, buffer[i] });
-                return 1;
-            },
-        }
-    }
-
-    fn decode101(self: *Parser, buffer: []u8, i: usize) !u8 {
-        const ops = (buffer[i] >> 4) & 0b1;
-
-        switch (ops) {
-            0b1 => {
-                const mov = Mov.parseImmediateToReg(buffer[i .. i + 3]);
-                try self.instructions.append(Instruction{ .mov = mov });
-
-                switch (mov.word) {
-                    0 => return 2,
-                    1 => return 3,
-                }
-            },
-            else => {
-                std.debug.print("Missing ops {b} {b}\n", .{ ops, buffer[i] });
-                return 1;
-            },
-        }
-    }
-
     // TODO inline functions
-    fn decode(self: *Parser, buffer: []u8, i: usize) !u8 {
-        const ops = (buffer[i] >> 5);
+    fn decode(self: *Parser, buffer: []u8, i: usize) !usize {
+        const optional_mov, const bytes_to_skip = Mov.parseFromBuffer(buffer, i);
 
-        switch (ops) {
-            0b100 => {
-                return self.decode100(buffer, i);
-            },
-            0b110 => {
-                return self.decode110(buffer, i);
-            },
-            0b101 => {
-                return self.decode101(buffer, i);
-            },
-            else => {
-                std.debug.print("Missing ops {b} {b}\n", .{ ops, buffer[i] });
-                return 1;
-            },
+        if (optional_mov) |mov| {
+            try self.instructions.append(Instruction{ .mov = mov });
+            return bytes_to_skip;
         }
+
+        std.debug.print("Missing ops {b} \n", .{buffer[i]});
+        return 1;
     }
 };
 
