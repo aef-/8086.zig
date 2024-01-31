@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const RegName = enum { al, cl, dl, bl, ah, ch, dh, bh, ax, cx, dx, bx, sp, bp, si, di };
-const MemName1 = enum { bx, bp, si, di };
+const MemName1 = enum { bx, bx1, bp, bp1, si, di, bp2, bx2 };
 const MemName2 = enum { si, di };
 const SegRegCode = enum { es, cs, ss, ds };
 const MovType = enum { regMemToReg, immediateRegMem, immediateToMem, memToAcc, accToMem, regMemToSegReg, segRegToRegMem };
@@ -18,21 +18,38 @@ const Address = union(MemMode) {
 
         switch (self.*) {
             .no_displacement => {
-                try b.writer().print("[{s} + {s}]", .{ @tagName(self.no_displacement.addr1.?), @tagName(self.no_displacement.addr2.?) });
-                //return try std.fmt.allocPrint(allocator, "no displacement", .{});
+                if (self.no_displacement.addr1) |addr| {
+                    try b.writer().print("[{s}", .{@tagName(addr)[0..2]});
+                }
+                if (self.no_displacement.addr2) |addr| {
+                    try b.writer().print(" + {s}", .{@tagName(addr)});
+                }
+                if (self.no_displacement.direct_address) |addr| {
+                    try b.writer().print("[{d}", .{addr});
+                }
+                try b.writer().print("]", .{});
             },
             .eight_bit => {
-                try b.writer().print("[{s}]", .{@tagName(self.eight_bit.addr1)});
-                //return try std.fmt.allocPrint(allocator, "mov eightbit", .{});
+                try b.writer().print("[{s}", .{@tagName(self.eight_bit.addr1)[0..2]});
+                if (self.eight_bit.addr2) |addr2| {
+                    try b.writer().print(" + {s}", .{@tagName(addr2)});
+                }
+                if (self.eight_bit.displacement != 0) {
+                    try b.writer().print(" + {?}]", .{self.eight_bit.displacement});
+                } else {
+                    try b.writer().print("]", .{});
+                }
             },
             .sixteen_bit => {
-                try b.writer().print("3({s})", .{@tagName(self.sixteen_bit.addr1)});
+                try b.writer().print("[{s}", .{@tagName(self.sixteen_bit.addr1)[0..2]});
                 if (self.sixteen_bit.addr2) |addr2| {
-                    try b.writer().print("+ ({s})", .{@tagName(addr2)});
+                    try b.writer().print(" + {s}", .{@tagName(addr2)});
                 }
-                //const str3 = try std.fmt.allocPrint(allocator, "+ ({d})", .{self.sixteen_bit.displacement});
-                //t = t.append(str3);
-                //
+                if (self.sixteen_bit.displacement != 0) {
+                    try b.writer().print(" + {?}]", .{self.sixteen_bit.displacement});
+                } else {
+                    try b.writer().print("]", .{});
+                }
             },
             .register => {
                 try b.writer().print("{s}", .{@tagName(self.register)});
@@ -41,7 +58,8 @@ const Address = union(MemMode) {
         return b.getWritten();
     }
 };
-const NoDisplacement = struct { addr1: ?MemName1, addr2: ?MemName2, direct_address: i16 };
+// TODO this is a bad type, it should be a union of MemNames or Direct Address
+const NoDisplacement = struct { addr1: ?MemName1, addr2: ?MemName2, direct_address: ?i16 };
 const Displacement = struct { addr1: MemName1, addr2: ?MemName2, displacement: i16 };
 
 pub const Mov = union(MovType) {
@@ -152,7 +170,7 @@ const ImmediateRegMem = struct {
     }
 
     pub fn toStr(self: *const ImmediateRegMem, allocator: std.mem.Allocator) ![]u8 {
-        var buffer: [12]u8 = undefined;
+        var buffer: [32]u8 = undefined;
         return try std.fmt.allocPrint(allocator, "mov {s}, {s}", .{ try self.dst.toStr(&buffer), @tagName(self.src) });
     }
 };
@@ -182,11 +200,11 @@ const ImmediateToReg = struct {
         if (self.data2) |data2| {
             const d: u16 = @intCast(data2);
             const data: i16 = @bitCast((d << 8) | self.data1);
-            var buffer: [12]u8 = undefined;
+            var buffer: [32]u8 = undefined;
             return try std.fmt.allocPrint(allocator, "2mov {s}, {d}", .{ try self.dst.toStr(&buffer), data });
         } else {
             const data: i8 = @bitCast(self.data1);
-            var buffer: [12]u8 = undefined;
+            var buffer: [32]u8 = undefined;
             return try std.fmt.allocPrint(allocator, "2mov {s}, {d}", .{ try self.dst.toStr(&buffer), data });
         }
     }
@@ -205,7 +223,6 @@ const RegMemToReg = struct {
         const mod: u2 = @intCast(buffer[1] >> 6);
         const reg: u3 = @intCast((buffer[1] >> 3) & 0b111);
         const regmem: u3 = @intCast(buffer[1] & 0b111);
-        std.debug.print("Mod {b}\n", .{(buffer[1] >> 6)});
 
         const mode = @as(MemMode, @enumFromInt(mod));
         var src: Address = undefined;
@@ -226,16 +243,16 @@ const RegMemToReg = struct {
     }
 
     pub fn toStr(self: *const RegMemToReg, allocator: std.mem.Allocator) ![]u8 {
-        var buffer: [12]u8 = undefined;
-        var buffer1: [12]u8 = undefined;
-        return try std.fmt.allocPrint(allocator, "3mov {s}, {s}", .{ (try self.dst.toStr(&buffer)), try self.src.toStr(&buffer1) });
+        var buffer: [32]u8 = undefined;
+        var buffer1: [32]u8 = undefined;
+        return try std.fmt.allocPrint(allocator, "mov {s}, {s}", .{ try self.dst.toStr(&buffer), try self.src.toStr(&buffer1) });
     }
 };
 
 const MemToAcc = struct {
     word: u1,
-    src: u16,
     dst: Address,
+    src: u16,
 
     fn parseFromBuffer(buffer: []u8) MemToAcc {
         const w: u1 = @intCast(buffer[0] >> 7 & 1);
@@ -253,34 +270,37 @@ const MemToAcc = struct {
         };
     }
     pub fn toStr(self: *const MemToAcc, allocator: std.mem.Allocator) ![]u8 {
-        var buffer: [12]u8 = undefined;
+        var buffer: [32]u8 = undefined;
         return try std.fmt.allocPrint(allocator, "mov {s}, [{d}]", .{ try self.dst.toStr(&buffer), self.src });
     }
 };
 
 const AccToMem = struct {
     word: u1,
-    dst: Address,
-    src: u16,
+    dst: u16,
+    src: Address,
 
     fn parseFromBuffer(buffer: []u8) AccToMem {
         const w: u1 = @intCast(buffer[0] >> 7 & 1);
         const reg = 0b000;
-        const dst = getAddress(buffer, MemMode.register, w, reg);
+        const src = getAddress(buffer, MemMode.register, w, reg);
         const addr_lo: u8 = buffer[1];
         const addr_hi: u16 = @intCast(buffer[2]);
 
         const addr: u16 = @bitCast((addr_hi << 8) | addr_lo);
 
         return AccToMem{
-            .src = addr,
-            .dst = dst,
+            .src = src,
+            .dst = addr,
             .word = w,
         };
     }
     pub fn toStr(self: *const AccToMem, allocator: std.mem.Allocator) ![]u8 {
-        var buffer: [12]u8 = undefined;
-        return try std.fmt.allocPrint(allocator, "mov [{s}], {d}", .{ try self.dst.toStr(&buffer), self.src });
+        var buffer: [32]u8 = undefined;
+        return try std.fmt.allocPrint(allocator, "mov [{d}], {s}", .{
+            self.dst,
+            try self.src.toStr(&buffer),
+        });
     }
 };
 
@@ -385,14 +405,35 @@ fn getAddress(buffer: []u8, mode: MemMode, w: u1, regmem: u3) Address {
         },
         .eight_bit => {
             const disp: i16 = getDisplacement(buffer, mode);
-            return Address{ .eight_bit = Displacement{ .addr1 = @as(MemName1, @enumFromInt(regmem)), .addr2 = @as(MemName2, @enumFromInt(regmem)), .displacement = disp } };
+            var addr2: ?MemName2 = null;
+            if (regmem < 0b110) {
+                addr2 = @as(MemName2, @enumFromInt(regmem));
+            }
+            return Address{ .eight_bit = Displacement{ .addr1 = @as(MemName1, @enumFromInt(regmem)), .addr2 = addr2, .displacement = disp } };
         },
         .sixteen_bit => {
             const disp: i16 = getDisplacement(buffer, mode);
-            return Address{ .sixteen_bit = Displacement{ .addr1 = @as(MemName1, @enumFromInt(regmem)), .addr2 = @as(MemName2, @enumFromInt(regmem)), .displacement = disp } };
+            var addr2: ?MemName2 = null;
+            if (regmem < 0b110) {
+                addr2 = @as(MemName2, @enumFromInt(regmem));
+            }
+
+            return Address{ .sixteen_bit = Displacement{ .addr1 = @as(MemName1, @enumFromInt(regmem)), .addr2 = addr2, .displacement = disp } };
         },
         .no_displacement => {
-            return Address{ .no_displacement = NoDisplacement{ .addr1 = @as(MemName1, @enumFromInt(regmem)), .addr2 = @as(MemName2, @enumFromInt(regmem)), .direct_address = 1 } };
+            var addr1: ?MemName1 = null;
+            var addr2: ?MemName2 = null;
+            var direct_address: ?i16 = null;
+            if (regmem != 0b110) {
+                addr1 = @as(MemName1, @enumFromInt(regmem));
+                if (regmem < 0b110) {
+                    addr2 = @as(MemName2, @enumFromInt(regmem));
+                }
+            } else {
+                direct_address = getDisplacement(buffer, MemMode.sixteen_bit);
+            }
+
+            return Address{ .no_displacement = NoDisplacement{ .addr1 = addr1, .addr2 = addr2, .direct_address = direct_address } };
         },
     }
 }
