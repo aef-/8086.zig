@@ -81,11 +81,11 @@ const Parser = struct {
     }
     // TODO inline functions
     fn decode(self: *Parser, buffer: []u8, i: usize) !usize {
-        const optional_mov, const bytes_to_skip = Mov.parseFromBuffer(buffer, i);
+        const optional_mov = Mov.parseFromBuffer(buffer, i);
 
         if (optional_mov) |mov| {
             try self.instructions.append(Instruction{ .mov = mov });
-            return bytes_to_skip;
+            return mov.bytesUsed();
         }
 
         std.debug.print("Missing ops {b} \n", .{buffer[i]});
