@@ -1,91 +1,15 @@
 const std = @import("std");
+const addrstd = @import("./address.zig");
+const Address = addrstd.Address;
+const MemMode = addrstd.MemMode;
+const RegName = addrstd.RegName;
+const SegRegCode = addrstd.SegRegCode;
+const MemName1 = addrstd.MemName1;
+const MemName2 = addrstd.MemName2;
+const NoDisplacement = addrstd.NoDisplacement;
+const Displacement = addrstd.Displacement;
 
-const RegName = enum { al, cl, dl, bl, ah, ch, dh, bh, ax, cx, dx, bx, sp, bp, si, di };
-const MemName1 = enum { bx, bx1, bp, bp1, si, di, bp2, bx2 };
-const MemName2 = enum { si, di };
-const SegRegCode = enum { es, cs, ss, ds };
 const MovType = enum { regMemToReg, immediateRegMem, immediateToMem, memToAcc, accToMem, regMemToSegReg, segRegToRegMem };
-const MemMode = enum { no_displacement, eight_bit, sixteen_bit, register };
-
-// Adapted from https://github.com/cryptocode/bithacks/blob/main/bithacks.zig
-pub fn signExtendFixed(comptime target: type, val: anytype) target {
-    const T = @TypeOf(val);
-    const SignedType = std.meta.Int(.signed, @typeInfo(T).Int.bits);
-    return @as(SignedType, @bitCast(val));
-}
-
-const Address = union(MemMode) {
-    no_displacement: NoDisplacement,
-    eight_bit: Displacement,
-    sixteen_bit: Displacement,
-    register: RegName,
-
-    pub fn bytesUsed(self: *const Address) usize {
-        switch (self.*) {
-            .no_displacement => {
-                if (self.no_displacement.direct_address) |_| {
-                    return 2;
-                }
-                return 0;
-            },
-            .eight_bit => return 1,
-            .sixteen_bit => return 2,
-            .register => return 0,
-        }
-    }
-
-    pub fn toStr(self: *const Address, buffer: []u8) ![]u8 {
-        var b = std.io.fixedBufferStream(buffer);
-
-        switch (self.*) {
-            .no_displacement => {
-                if (self.no_displacement.addr1) |addr| {
-                    try b.writer().print("[{s}", .{@tagName(addr)[0..2]});
-                }
-                if (self.no_displacement.addr2) |addr| {
-                    try b.writer().print(" + {s}", .{@tagName(addr)});
-                }
-                if (self.no_displacement.direct_address) |addr| {
-                    try b.writer().print("[{d}", .{addr});
-                }
-                try b.writer().print("]", .{});
-            },
-            .eight_bit => {
-                try b.writer().print("[{s}", .{@tagName(self.eight_bit.addr1)[0..2]});
-                if (self.eight_bit.addr2) |addr2| {
-                    try b.writer().print(" + {s}", .{@tagName(addr2)});
-                }
-                if (self.eight_bit.displacement < 0) {
-                    try b.writer().print(" - {d}]", .{self.eight_bit.displacement * -1});
-                } else if (self.eight_bit.displacement > 0) {
-                    try b.writer().print(" + {d}]", .{self.eight_bit.displacement});
-                } else {
-                    try b.writer().print("]", .{});
-                }
-            },
-            .sixteen_bit => {
-                try b.writer().print("[{s}", .{@tagName(self.sixteen_bit.addr1)[0..2]});
-                if (self.sixteen_bit.addr2) |addr2| {
-                    try b.writer().print(" + {s}", .{@tagName(addr2)});
-                }
-                if (self.sixteen_bit.displacement < 0) {
-                    try b.writer().print(" - {d}]", .{self.sixteen_bit.displacement * -1});
-                } else if (self.sixteen_bit.displacement > 0) {
-                    try b.writer().print(" + {d}]", .{self.sixteen_bit.displacement});
-                } else {
-                    try b.writer().print("]", .{});
-                }
-            },
-            .register => {
-                try b.writer().print("{s}", .{@tagName(self.register)});
-            },
-        }
-        return b.getWritten();
-    }
-};
-// TODO this is a bad type, it should be a union of MemNames or Direct Address
-const NoDisplacement = struct { addr1: ?MemName1, addr2: ?MemName2, direct_address: ?i16 };
-const Displacement = struct { addr1: MemName1, addr2: ?MemName2, displacement: i16 };
 
 pub const Mov = union(MovType) {
     regMemToReg: RegMemToReg,
@@ -161,7 +85,7 @@ pub const Mov = union(MovType) {
             const mov = SegRegToRegMem.parseFromBuffer(buffer[i .. i + 4]);
             return Mov{ .segRegToRegMem = mov };
         } else if (ops7 == 0b1100011) {
-            const mov = ImmediateRegMem.parseFromBuffer(buffer[i .. i + 7]);
+            const mov = ImmediateRegMem.parseFromBuffer(buffer[i .. i + 6]);
             return Mov{ .immediateRegMem = mov };
         } else if (ops7 == 0b1010000) {
             const mov = MemToAcc.parseFromBuffer(buffer[i .. i + 3]);
@@ -192,12 +116,28 @@ const ImmediateRegMem = struct {
         const mod: u2 = @intCast(buffer[1] >> 6);
         const regmem: u3 = @intCast(buffer[1] & 0b111);
         const mode = @as(MemMode, @enumFromInt(mod));
-        const dst = getAddress(buffer, mode, w, regmem);
-        const data1: u8 = buffer[5];
-        var data2: u8 = 0;
+        const dst = Address.init(buffer, mode, w, regmem);
+        var dataIndex: usize = 0;
 
+        switch (mode) {
+            .no_displacement => {
+                dataIndex = 2;
+            },
+            .eight_bit => {
+                dataIndex = 3;
+            },
+            .sixteen_bit => {
+                dataIndex = 4;
+            },
+            .register => {
+                dataIndex = 2;
+            },
+        }
+
+        const data1: u8 = buffer[dataIndex];
+        var data2: u8 = 0;
         if (w == 1) {
-            data2 = buffer[6];
+            data2 = buffer[dataIndex + 1];
         }
 
         const d: u16 = @intCast(data2);
@@ -208,7 +148,11 @@ const ImmediateRegMem = struct {
 
     pub fn toStr(self: *const ImmediateRegMem, allocator: std.mem.Allocator) ![]u8 {
         var buffer: [32]u8 = undefined;
-        return try std.fmt.allocPrint(allocator, "mov {s}, {d}", .{ try self.dst.toStr(&buffer), self.src });
+        if (self.word == 1) {
+            return try std.fmt.allocPrint(allocator, "mov {s}, word {d}", .{ try self.dst.toStr(&buffer), self.src });
+        } else {
+            return try std.fmt.allocPrint(allocator, "mov {s}, byte {d}", .{ try self.dst.toStr(&buffer), self.src });
+        }
     }
 };
 
@@ -225,7 +169,7 @@ const ImmediateToReg = struct {
         var data2: ?u8 = null;
 
         const reg: u3 = @intCast(buffer[0] & 0b111);
-        const dst: Address = getAddress(buffer, MemMode.register, w, reg);
+        const dst: Address = Address.init(buffer, MemMode.register, w, reg);
 
         if (w == 1) {
             data2 = @intCast(buffer[2]);
@@ -267,12 +211,12 @@ const RegMemToReg = struct {
 
         switch (d) {
             0 => {
-                src = getAddress(buffer, MemMode.register, w, reg);
-                dst = getAddress(buffer, mode, w, regmem);
+                src = Address.init(buffer, MemMode.register, w, reg);
+                dst = Address.init(buffer, mode, w, regmem);
             },
             1 => {
-                src = getAddress(buffer, mode, w, regmem);
-                dst = getAddress(buffer, MemMode.register, w, reg);
+                src = Address.init(buffer, mode, w, regmem);
+                dst = Address.init(buffer, MemMode.register, w, reg);
             },
         }
 
@@ -294,7 +238,7 @@ const MemToAcc = struct {
     fn parseFromBuffer(buffer: []u8) MemToAcc {
         const w: u1 = @intCast(buffer[0] >> 7 & 1);
         const reg = 0b000;
-        const dst = getAddress(buffer, MemMode.register, w, reg);
+        const dst = Address.init(buffer, MemMode.register, w, reg);
         const addr_lo: u8 = buffer[1];
         const addr_hi: u16 = @intCast(buffer[2]);
 
@@ -320,7 +264,7 @@ const AccToMem = struct {
     fn parseFromBuffer(buffer: []u8) AccToMem {
         const w: u1 = @intCast(buffer[0] >> 7 & 1);
         const reg = 0b000;
-        const src = getAddress(buffer, MemMode.register, w, reg);
+        const src = Address.init(buffer, MemMode.register, w, reg);
         const addr_lo: u8 = buffer[1];
         const addr_hi: u16 = @intCast(buffer[2]);
 
@@ -390,73 +334,3 @@ const SegRegToRegMem = struct {
         return try std.fmt.allocPrint(allocator, "mov {s}, {s}", .{ @tagName(self.dst), @tagName(self.src) });
     }
 };
-
-fn getDisplacement(buffer: []u8, mode: MemMode) i16 {
-    var displacement_lo: u8 = undefined;
-    var displacement_hi: u8 = undefined;
-    var displacement: i16 = undefined;
-
-    switch (mode) {
-        .no_displacement => unreachable,
-        .eight_bit => {
-            displacement_hi = 0;
-            displacement_lo = buffer[2];
-            displacement = signExtendFixed(i16, displacement_lo);
-        },
-        .sixteen_bit => {
-            displacement_lo = buffer[2];
-            displacement_hi = buffer[3];
-            const d: u16 = @intCast(displacement_hi);
-            displacement = @bitCast((d << 8) | displacement_lo);
-        },
-        .register => unreachable,
-    }
-
-    return displacement;
-}
-
-fn getAddress(buffer: []u8, mode: MemMode, w: u1, regmem: u3) Address {
-    switch (mode) {
-        .register => {
-            switch (w) {
-                0 => return Address{ .register = @as(RegName, @enumFromInt(regmem)) },
-                1 => {
-                    const l = @typeInfo(RegName).Enum.fields.len / 2;
-                    return Address{ .register = @as(RegName, @enumFromInt(regmem + l)) };
-                },
-            }
-        },
-        .eight_bit => {
-            const disp: i16 = getDisplacement(buffer, mode);
-            var addr2: ?MemName2 = null;
-            if (regmem < 0b100) {
-                addr2 = @as(MemName2, @enumFromInt(regmem));
-            }
-            return Address{ .eight_bit = Displacement{ .addr1 = @as(MemName1, @enumFromInt(regmem)), .addr2 = addr2, .displacement = disp } };
-        },
-        .sixteen_bit => {
-            const disp: i16 = getDisplacement(buffer, mode);
-            var addr2: ?MemName2 = null;
-            if (regmem < 0b100) {
-                addr2 = @as(MemName2, @enumFromInt(regmem));
-            }
-
-            return Address{ .sixteen_bit = Displacement{ .addr1 = @as(MemName1, @enumFromInt(regmem)), .addr2 = addr2, .displacement = disp } };
-        },
-        .no_displacement => {
-            var addr1: ?MemName1 = null;
-            var addr2: ?MemName2 = null;
-            var direct_address: ?i16 = null;
-            if (regmem != 0b110) {
-                addr1 = @as(MemName1, @enumFromInt(regmem));
-                if (regmem < 0b100) {
-                    addr2 = @as(MemName2, @enumFromInt(regmem));
-                }
-            } else {
-                direct_address = getDisplacement(buffer, MemMode.sixteen_bit);
-            }
-
-            return Address{ .no_displacement = NoDisplacement{ .addr1 = addr1, .addr2 = addr2, .direct_address = direct_address } };
-        },
-    }
-}

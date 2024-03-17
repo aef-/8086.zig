@@ -36,9 +36,10 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
+    const outw = std.io.getStdOut().writer();
     for (parser.instructions.items) |instruction| {
         const str = try instruction.toStr(allocator);
-        std.debug.print("{s}\n", .{str});
+        try outw.print("{s}\n", .{str});
     }
 }
 const NotImplemented = struct {
